@@ -30,7 +30,7 @@ public class RankLibRanker implements AlphabetCarrying {
     private Normalizer featureNormalizer;
     private Alphabet dataAlphabet;
     private Alphabet targetAlphabet;
-    private Function<Instance, String> instance2datapointId = i -> i.getName() + "#" + i.getSource();
+
 
     /**
      * <p>Creates an object that has all information to create a RankLib ranker but does not immediately do it.</p>
@@ -216,10 +216,10 @@ public class RankLibRanker implements AlphabetCarrying {
             for (int i = 0; i < fv.numLocations(); i++)
                 // RankLib indices start counting at 1, MALLET at 0
                 ranklibIndices[i] = indices[i] + 1;
-            String queryId = instance2datapointId.apply(d);
+            String queryId = d.getName().toString();
             DataPoint dp = new SparseDataPoint(ranklibValues, ranklibIndices, queryId, (Float) ((Label) d.getTarget()).getEntry());
             // The description field of the DataPoint is used to store the document ID
-            dp.setDescription("#" + d.getSource().toString());
+            dp.setDescription("#" + d.getSource());
             return dp;
         }).collect(Collectors.groupingBy(DataPoint::getID, LinkedHashMap::new, Collectors.toList()));
         final LinkedHashMap<String, RankList> rankLists = new LinkedHashMap<>();
@@ -275,9 +275,12 @@ public class RankLibRanker implements AlphabetCarrying {
      */
     public InstanceList rank(InstanceList documents) {
 
-        // here, the keys must be the same as in the final Instance doc = docsById.get(dp.getID() + docId) line below
-        // and thus must be the same as in convertToRankList() where the DataPoints are created
-        Map<String, Instance> docsById = documents.stream().collect(Collectors.toMap(instance2datapointId::apply, Function.identity()));
+        // These ID function are required to unique identify each instance corresponding to a DataPoint in RankLib.
+        // The naming conventions must be the same as in convertToRankList().
+        Function<Instance, String> instance2uniqueId = i -> i.getName() + "#" + i.getSource();
+        Function<DataPoint, String> datapoint2uniqueId = dp -> dp.getID() + dp.getDescription();
+
+        Map<String, Instance> docsById = documents.stream().collect(Collectors.toMap(instance2uniqueId::apply, Function.identity()));
 
         if (docsById.size() != documents.size())
             throw new IllegalArgumentException("The passed documents do not have unique IDs. The input document list has size " + documents + ", its ID map form only " + docsById.size());
@@ -289,7 +292,7 @@ public class RankLibRanker implements AlphabetCarrying {
             for (int i = 0; i < rl.size(); i++) {
                 final DataPoint dp = rl.get(i);
                 final double score = ranker.eval(dp);
-                final Instance doc = docsById.get(dp.getID());
+                final Instance doc = docsById.get(datapoint2uniqueId.apply(dp));
                 doc.setProperty("score", score);
             }
         }
