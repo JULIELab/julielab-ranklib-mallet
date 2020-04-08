@@ -19,7 +19,7 @@ import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-public class RankLibRanker {
+public class RankLibRanker implements AlphabetCarrying {
     private final static Logger log = LoggerFactory.getLogger(RankLibRanker.class);
     private final MetricScorerFactory metricScorerFactory;
     private Ranker ranker;
@@ -28,6 +28,9 @@ public class RankLibRanker {
     private METRIC trainMetric;
     private int k;
     private Normalizer featureNormalizer;
+    private Alphabet dataAlphabet;
+    private Alphabet targetAlphabet;
+    private Function<Instance, String> instance2datapointId = i -> i.getName() + "#" + i.getSource();
 
     /**
      * <p>Creates an object that has all information to create a RankLib ranker but does not immediately do it.</p>
@@ -62,13 +65,65 @@ public class RankLibRanker {
         }
     }
 
+    public static InstanceList loadSvmLightData(File dataFile) throws Exception {
+        // For MALLET, we create one feature or data alphabet and the target or label alphabet
+        // to encode the feature names into feature indexes and the relevance into label objects.
+        Alphabet dataAlphabet = new Alphabet();
+        LabelAlphabet targetAlphabet = new LabelAlphabet();
+        // This instance list will only accept instances with the correct alphabets.
+        InstanceList ret = new InstanceList(dataAlphabet, targetAlphabet);
+        try (BufferedReader br = FileUtilities.getReaderFromFile(dataFile)) {
+            int documentId = 0;
+            for (String line : (Iterable<String>) () -> br.lines().iterator()) {
+                String[] split = line.split("\\s+");
+                Float relevance = Float.parseFloat(split[0]);
+                String queryId = split[1];
+                int[] indices = new int[5];
+                double[] features = new double[5];
+                // The first position is the relevance score, the second is the query ID.
+                // After the hash character there comes the optional document ID.
+                boolean hasDocumentId = false;
+                for (int i = 2; i < split.length; i++) {
+                    if (split[i].equals("#")) {
+                        hasDocumentId = true;
+                        break;
+                    }
+                    String[] indexAndValue = split[i].split(":");
+                    // We need to actually create the indices in the data alphabet for all features
+                    indices[i - 2] = dataAlphabet.lookupIndex("f" + indexAndValue[0]);
+                    features[i - 2] = Double.parseDouble(indexAndValue[1]);
+                }
+                FeatureVector fv = new FeatureVector(dataAlphabet, indices, features);
+                // Now create a label object for the relevance score
+                Label label = targetAlphabet.lookupLabel(relevance);
+                // Create the actual instance. Its data is the feature vector, its target is the label we created above.
+                // The FeatureVector knows the data alphabet, the label knows the target alphabet. The is necessary
+                // or the InstanceList won't accept the instance.
+                Instance instance = new Instance(fv, label, queryId, hasDocumentId ? split[split.length - 1] : "doc" + documentId);
+                ret.add(instance);
+                ++documentId;
+            }
+        }
+        return ret;
+    }
+
     public double score(InstanceList documentList, METRIC scoringMetric, int k) {
         final MetricScorer scorer = metricScorerFactory.createScorer(scoringMetric, k);
         final Map<String, RankList> rankLists = convertToRankList(documentList);
         return scorer.score(rankLists.values().stream().collect(Collectors.toList()));
     }
 
+    public Alphabet getDataAlphabet() {
+        return dataAlphabet;
+    }
+
+    public Alphabet getTargetAlphabet() {
+        return targetAlphabet;
+    }
+
     public void train(InstanceList documents) {
+        this.dataAlphabet = documents.getDataAlphabet();
+        this.targetAlphabet = documents.getTargetAlphabet();
         log.info("Training on {} documents without validation set.", documents.size());
         final Map<String, RankList> rankLists = convertToRankList(documents);
         this.features = this.features != null ? this.features : FeatureManager.getFeatureFromSampleVector(new ArrayList(rankLists.values()));
@@ -161,10 +216,10 @@ public class RankLibRanker {
             for (int i = 0; i < fv.numLocations(); i++)
                 // RankLib indices start counting at 1, MALLET at 0
                 ranklibIndices[i] = indices[i] + 1;
-            String queryId = d.getName().toString();
-            DataPoint dp = new SparseDataPoint(ranklibValues, ranklibIndices, queryId, (Float)((Label) d.getTarget()).getEntry());
+            String queryId = instance2datapointId.apply(d);
+            DataPoint dp = new SparseDataPoint(ranklibValues, ranklibIndices, queryId, (Float) ((Label) d.getTarget()).getEntry());
             // The description field of the DataPoint is used to store the document ID
-            dp.setDescription("#"+d.getSource().toString());
+            dp.setDescription("#" + d.getSource().toString());
             return dp;
         }).collect(Collectors.groupingBy(DataPoint::getID, LinkedHashMap::new, Collectors.toList()));
         final LinkedHashMap<String, RankList> rankLists = new LinkedHashMap<>();
@@ -212,6 +267,7 @@ public class RankLibRanker {
      *     <li>{@link Instance#getName()} - query ID</li>
      *     <li>{@link Instance#getSource()} - {@link DataPoint#getDescription()}, used for the document id</li>
      *     <li>{@link Instance#getData()} - must be a MALLET {@link FeatureVector} that will be translated into RankLib {@link DataPoint} objects.</li>
+     *     <li>{@link Instance#getTarget()} -  a MALLET {@link Label} with a float-valued base object indicating the relevance value of the instance..</li>
      * </ul>
      * The output is a new <tt>InstanceList</tt> sorted by descreasing ranking scores. The score itsel is stored in the
      * 'score' property of the {@link Instance#getProperty(String)} map.
@@ -221,7 +277,7 @@ public class RankLibRanker {
 
         // here, the keys must be the same as in the final Instance doc = docsById.get(dp.getID() + docId) line below
         // and thus must be the same as in convertToRankList() where the DataPoints are created
-        Map<String, Instance> docsById = documents.stream().collect(Collectors.toMap(d -> d.getName().toString() + "#"+d.getSource().toString(), Function.identity()));
+        Map<String, Instance> docsById = documents.stream().collect(Collectors.toMap(instance2datapointId::apply, Function.identity()));
 
         if (docsById.size() != documents.size())
             throw new IllegalArgumentException("The passed documents do not have unique IDs. The input document list has size " + documents + ", its ID map form only " + docsById.size());
@@ -233,8 +289,7 @@ public class RankLibRanker {
             for (int i = 0; i < rl.size(); i++) {
                 final DataPoint dp = rl.get(i);
                 final double score = ranker.eval(dp);
-                final String docId = dp.getDescription();
-                final Instance doc = docsById.get(dp.getID() + docId);
+                final Instance doc = docsById.get(dp.getID());
                 doc.setProperty("score", score);
             }
         }
@@ -245,50 +300,17 @@ public class RankLibRanker {
         return ret;
     }
 
-
     public Ranker getRankLibRanker() {
         return ranker;
     }
 
-    public static InstanceList loadSvmLightData(File dataFile) throws Exception {
-        // For MALLET, we create one feature or data alphabet and the target or label alphabet
-        // to encode the feature names into feature indexes and the relevance into label objects.
-        Alphabet dataAlphabet = new Alphabet();
-        LabelAlphabet targetAlphabet = new LabelAlphabet();
-        // This instance list will only accept instances with the correct alphabets.
-        InstanceList ret = new InstanceList(dataAlphabet, targetAlphabet);
-        try (BufferedReader br = FileUtilities.getReaderFromFile(dataFile)) {
-            int documentId = 0;
-            for (String line : (Iterable<String>) () -> br.lines().iterator()) {
-                String[] split = line.split("\\s+");
-                Float relevance = Float.parseFloat(split[0]);
-                String queryId = split[1];
-                int[] indices = new int[5];
-                double[] features = new double[5];
-                // The first position is the relevance score, the second is the query ID.
-                // After the hash character there comes the optional document ID.
-                boolean hasDocumentId = false;
-                for (int i = 2; i < split.length; i++) {
-                    if (split[i].equals("#")) {
-                        hasDocumentId = true;
-                        break;
-                    }
-                    String[] indexAndValue = split[i].split(":");
-                    // We need to actually create the indices in the data alphabet for all features
-                    indices[i - 2] = dataAlphabet.lookupIndex("f" + indexAndValue[0]);
-                    features[i - 2] = Double.parseDouble(indexAndValue[1]);
-                }
-                FeatureVector fv = new FeatureVector(dataAlphabet, indices, features);
-                // Now create a label object for the relevance score
-                Label label = targetAlphabet.lookupLabel(relevance);
-                // Create the actual instance. Its data is the feature vector, its target is the label we created above.
-                // The FeatureVector knows the data alphabet, the label knows the target alphabet. The is necessary
-                // or the InstanceList won't accept the instance.
-                Instance instance = new Instance(fv, label, queryId, hasDocumentId ? split[split.length - 1] : "doc" + documentId);
-                ret.add(instance);
-                ++documentId;
-            }
-        }
-        return ret;
+    @Override
+    public Alphabet getAlphabet() {
+        return getDataAlphabet();
+    }
+
+    @Override
+    public Alphabet[] getAlphabets() {
+        return new Alphabet[]{getDataAlphabet(), getTargetAlphabet()};
     }
 }
