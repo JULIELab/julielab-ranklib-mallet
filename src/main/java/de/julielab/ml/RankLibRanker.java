@@ -1,5 +1,6 @@
 package de.julielab.ml;
 
+import cc.mallet.pipe.Pipe;
 import cc.mallet.types.*;
 import ciir.umass.edu.features.*;
 import ciir.umass.edu.learning.*;
@@ -30,7 +31,23 @@ public class RankLibRanker implements AlphabetCarrying {
     private Normalizer featureNormalizer;
     private Alphabet dataAlphabet;
     private Alphabet targetAlphabet;
+    private Pipe instancePipe;
 
+    public Pipe getInstancePipe() {
+        return instancePipe;
+    }
+
+    public void setInstancePipe(Pipe instancePipe){
+        if (dataAlphabet != null && !instancePipe.getAlphabet().equals(dataAlphabet))
+            throw new IllegalArgumentException("The already existing data alphabet of the ranker and the data alphabet of the passed instance pipe do not match.");
+        if (targetAlphabet != null && !instancePipe.getTargetAlphabet().equals(targetAlphabet))
+            throw new IllegalArgumentException("The already existing target alphabet of the ranker and the target alphabet of the passed instance pipe do not match.");
+        if (dataAlphabet == null)
+            dataAlphabet = instancePipe.getAlphabet();
+        if (targetAlphabet == null)
+            targetAlphabet = instancePipe.getTargetAlphabet();
+        this.instancePipe = instancePipe;
+    }
 
     /**
      * <p>Creates an object that has all information to create a RankLib ranker but does not immediately do it.</p>
@@ -132,7 +149,7 @@ public class RankLibRanker implements AlphabetCarrying {
 
     /**
      * <p>Trains a ranker on basis of the delivered MALLET instances.</p>
-     * <p>MALLET instance have multiple fields that can be set freely. Those fields translate to the requirements
+     * <p>MALLET instances have multiple fields that can be set freely. Those fields translate to the requirements
      * of the RankLib library as follows:
      * <ul>
      *     <li>{@link Instance#getName()} - query ID</li>
