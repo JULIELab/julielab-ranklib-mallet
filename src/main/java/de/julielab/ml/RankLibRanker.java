@@ -18,6 +18,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 public class RankLibRanker implements AlphabetCarrying {
@@ -141,6 +142,7 @@ public class RankLibRanker implements AlphabetCarrying {
     public void train(InstanceList documents) {
         this.dataAlphabet = documents.getDataAlphabet();
         this.targetAlphabet = documents.getTargetAlphabet();
+        setInstancePipe(documents.getPipe());
         log.info("Training on {} documents without validation set.", documents.size());
         final Map<String, RankList> rankLists = convertToRankList(documents);
         this.features = this.features != null ? this.features : FeatureManager.getFeatureFromSampleVector(new ArrayList(rankLists.values()));
@@ -166,6 +168,7 @@ public class RankLibRanker implements AlphabetCarrying {
      * @param randomSeed   The seed used to shuffle the data before splitting into train-dev sets.
      */
     public void train(InstanceList documents, boolean doValidation, float fraction, int randomSeed) {
+        setInstancePipe(documents.getPipe());
         if (!doValidation)
             log.info("Training on {} documents without validation set.", documents.size());
         else
@@ -221,24 +224,28 @@ public class RankLibRanker implements AlphabetCarrying {
             final double[] values = fv.getValues();
             final int[] indices = fv.getIndices();
 
-            float[] ranklibValues = new float[fv.numLocations()];
-            int[] ranklibIndices = new int[fv.numLocations()];
-            if (values == null) {
-                // binary vector
-                Arrays.fill(ranklibValues, 1f);
-            } else {
+            if (values.length > 0 || indices.length > 0) {
+
+                float[] ranklibValues = new float[fv.numLocations()];
+                int[] ranklibIndices = new int[fv.numLocations()];
+                if (values == null) {
+                    // binary vector
+                    Arrays.fill(ranklibValues, 1f);
+                } else {
+                    for (int i = 0; i < fv.numLocations(); i++)
+                        ranklibValues[i] = (float) values[i];
+                }
                 for (int i = 0; i < fv.numLocations(); i++)
-                    ranklibValues[i] = (float) values[i];
+                    // RankLib indices start counting at 1, MALLET at 0
+                    ranklibIndices[i] = indices != null ? indices[i] + 1 : i + 1;
+                String queryId = d.getName().toString();
+                DataPoint dp = new SparseDataPoint(ranklibValues, ranklibIndices, queryId, (Float) ((Label) d.getTarget()).getEntry());
+                // The description field of the DataPoint is used to store the document ID
+                dp.setDescription("#" + d.getSource());
+                return dp;
             }
-            for (int i = 0; i < fv.numLocations(); i++)
-                // RankLib indices start counting at 1, MALLET at 0
-                ranklibIndices[i] = indices[i] + 1;
-            String queryId = d.getName().toString();
-            DataPoint dp = new SparseDataPoint(ranklibValues, ranklibIndices, queryId, (Float) ((Label) d.getTarget()).getEntry());
-            // The description field of the DataPoint is used to store the document ID
-            dp.setDescription("#" + d.getSource());
-            return dp;
-        }).collect(Collectors.groupingBy(DataPoint::getID, LinkedHashMap::new, Collectors.toList()));
+            return null;
+        }).filter(Objects::nonNull).collect(Collectors.groupingBy(DataPoint::getID, LinkedHashMap::new, Collectors.toList()));
         final LinkedHashMap<String, RankList> rankLists = new LinkedHashMap<>();
         dataPointsByQueryId.forEach((key, value) -> rankLists.put(key, new RankList(value)));
         return rankLists;
@@ -316,6 +323,9 @@ public class RankLibRanker implements AlphabetCarrying {
 
         final InstanceList ret = new InstanceList(documents.getDataAlphabet(), documents.getTargetAlphabet());
         ret.addAll(documents);
+        // convertToRankList filters out empty feature vectors and does not create DataPoints for them because those
+        // cause trouble with some LtR algorithms. Set the respective scores to the minimum value.
+        ret.stream().filter(Predicate.not(d -> d.hasProperty("score"))).forEach(d -> d.setProperty("score", Double.MIN_VALUE));
         Collections.sort(ret, Comparator.<Instance>comparingDouble(d -> (double) d.getProperty("score")).reversed());
         return ret;
     }
