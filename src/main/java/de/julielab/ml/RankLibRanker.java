@@ -13,9 +13,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -33,22 +31,6 @@ public class RankLibRanker implements AlphabetCarrying {
     private Alphabet dataAlphabet;
     private Alphabet targetAlphabet;
     private Pipe instancePipe;
-
-    public Pipe getInstancePipe() {
-        return instancePipe;
-    }
-
-    public void setInstancePipe(Pipe instancePipe){
-        if (dataAlphabet != null && !instancePipe.getAlphabet().equals(dataAlphabet))
-            throw new IllegalArgumentException("The already existing data alphabet of the ranker and the data alphabet of the passed instance pipe do not match.");
-        if (targetAlphabet != null && !instancePipe.getTargetAlphabet().equals(targetAlphabet))
-            throw new IllegalArgumentException("The already existing target alphabet of the ranker and the target alphabet of the passed instance pipe do not match.");
-        if (dataAlphabet == null)
-            dataAlphabet = instancePipe.getAlphabet();
-        if (targetAlphabet == null)
-            targetAlphabet = instancePipe.getTargetAlphabet();
-        this.instancePipe = instancePipe;
-    }
 
     /**
      * <p>Creates an object that has all information to create a RankLib ranker but does not immediately do it.</p>
@@ -70,17 +52,14 @@ public class RankLibRanker implements AlphabetCarrying {
         // in the original RankLib, there was a static field enumerating all known features loaded within the current JVM.
         // I removed that because it is not thread safe.
         DataPoint.missingZero = true;
-        if (normalizer != null) {
-            if (normalizer.equalsIgnoreCase("sum"))
-                featureNormalizer = new SumNormalizor();
-            else if (normalizer.equalsIgnoreCase("zscore"))
-                featureNormalizer = new ZScoreNormalizor();
-            else if (normalizer.equalsIgnoreCase("linear"))
-                featureNormalizer = new LinearNormalizer();
-            else {
-                throw new IllegalArgumentException("Unknown normalizer: " + normalizer);
-            }
-        }
+        initFeatureNormalizer(normalizer);
+    }
+
+    /**
+     * Constructs an empty, untrainable ranker shell whose only purpose is to be used for loading a previously stored model.
+     */
+    public RankLibRanker() {
+        metricScorerFactory = new MetricScorerFactory();
     }
 
     public static InstanceList loadSvmLightData(File dataFile) throws Exception {
@@ -123,6 +102,98 @@ public class RankLibRanker implements AlphabetCarrying {
             }
         }
         return ret;
+    }
+
+    /**
+     * Stores all information required to load the ranker for ranking by {@link #loadFromObjectStream(ObjectInputStream)} into the given ObjectStream.
+     *
+     * @param output The object stream to write the ranker data to.
+     * @throws IOException If writing fails.
+     */
+    public void saveInObjectStream(ObjectOutputStream output) throws IOException {
+        output.writeObject(rType);
+        output.writeObject(trainMetric);
+        output.writeObject(k);
+        if (featureNormalizer != null)
+            output.writeObject(featureNormalizer.name());
+        if (instancePipe == null) {
+            output.writeObject(dataAlphabet);
+            output.writeObject(targetAlphabet);
+        } else {
+            output.writeObject(instancePipe);
+        }
+        output.writeObject(getModelAsString());
+        output.writeObject("End:RankLibRanker");
+    }
+
+    /**
+     * Reads all information required for ranking fro the given ObjectStream. The data is expected to have been written via {@link #saveInObjectStream(ObjectOutputStream)} before.
+     *
+     * @param input The input object stream.
+     * @throws IOException            If reading fails.
+     * @throws ClassNotFoundException If there is a class mismatch between an expected object and the actual contents of the object stream.
+     */
+    public void loadFromObjectStream(ObjectInputStream input) throws IOException, ClassNotFoundException {
+        Object o = input.readObject();
+        while (!o.equals("End:RankLibRanker")) {
+            assignLoadedObject(o);
+            o = input.readObject();
+        }
+    }
+
+    private void assignLoadedObject(Object o) {
+        if (o instanceof String) {
+            try {
+                initFeatureNormalizer((String) o);
+            } catch (IllegalArgumentException e) {
+                // this was not the normalizer name but - hopefully - the ranker model string
+                loadFromString((String) o);
+            }
+        } else if (o instanceof Alphabet) {
+            // We always store/load the data alphabet first
+            if (dataAlphabet == null)
+                dataAlphabet = (Alphabet) o;
+            else
+                targetAlphabet = (Alphabet) o;
+        } else if (o instanceof Pipe) {
+            setInstancePipe((Pipe) o);
+        } else if (o instanceof RANKER_TYPE) {
+            rType = (RANKER_TYPE) o;
+        } else if (o instanceof METRIC) {
+            trainMetric = (METRIC) o;
+        } else if (o instanceof Integer) {
+            k = (int) o;
+        }
+    }
+
+    public Pipe getInstancePipe() {
+        return instancePipe;
+    }
+
+    public void setInstancePipe(Pipe instancePipe) {
+        if (dataAlphabet != null && !instancePipe.getAlphabet().equals(dataAlphabet))
+            throw new IllegalArgumentException("The already existing data alphabet of the ranker and the data alphabet of the passed instance pipe do not match.");
+        if (targetAlphabet != null && !instancePipe.getTargetAlphabet().equals(targetAlphabet))
+            throw new IllegalArgumentException("The already existing target alphabet of the ranker and the target alphabet of the passed instance pipe do not match.");
+        if (dataAlphabet == null)
+            dataAlphabet = instancePipe.getAlphabet();
+        if (targetAlphabet == null)
+            targetAlphabet = instancePipe.getTargetAlphabet();
+        this.instancePipe = instancePipe;
+    }
+
+    private void initFeatureNormalizer(String normalizer) {
+        if (normalizer != null) {
+            if (normalizer.equalsIgnoreCase("sum"))
+                featureNormalizer = new SumNormalizor();
+            else if (normalizer.equalsIgnoreCase("zscore"))
+                featureNormalizer = new ZScoreNormalizor();
+            else if (normalizer.equalsIgnoreCase("linear"))
+                featureNormalizer = new LinearNormalizer();
+            else {
+                throw new IllegalArgumentException("Unknown normalizer: " + normalizer);
+            }
+        }
     }
 
     public double score(InstanceList documentList, METRIC scoringMetric, int k) {
@@ -263,6 +334,7 @@ public class RankLibRanker implements AlphabetCarrying {
             modelFile.getParentFile().mkdirs();
         ranker.save(modelFile.getAbsolutePath());
     }
+
 
     /**
      * RankLib models are stored as strings listing the model parameters. This method can be used to return this exact string.
