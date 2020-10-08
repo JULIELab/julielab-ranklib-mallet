@@ -112,7 +112,7 @@ public class RankLibRanker implements AlphabetCarrying, Serializable {
      */
     private void writeObject(ObjectOutputStream output) throws IOException {
         // calculate the number of objects we will write into the stream for later recovery
-        int numObjects = instancePipe != null ? 6 : 7;
+        int numObjects = instancePipe != null ? 7 : 8;
         if (featureNormalizer == null)
             --numObjects;
         if (dataAlphabet == null && instancePipe == null)
