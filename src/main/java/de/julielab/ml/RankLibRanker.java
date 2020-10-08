@@ -19,7 +19,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-public class RankLibRanker implements AlphabetCarrying {
+public class RankLibRanker implements AlphabetCarrying, Serializable {
     private final static Logger log = LoggerFactory.getLogger(RankLibRanker.class);
     private final MetricScorerFactory metricScorerFactory;
     private Ranker ranker;
@@ -105,39 +105,51 @@ public class RankLibRanker implements AlphabetCarrying {
     }
 
     /**
-     * Stores all information required to load the ranker for ranking by {@link #loadFromObjectStream(ObjectInputStream)} into the given ObjectStream.
+     * Customizes the Java serialization of this object.
      *
      * @param output The object stream to write the ranker data to.
      * @throws IOException If writing fails.
      */
-    public void saveInObjectStream(ObjectOutputStream output) throws IOException {
+    private void writeObject(ObjectOutputStream output) throws IOException {
+        // calculate the number of objects we will write into the stream for later recovery
+        int numObjects = instancePipe != null ? 6 : 7;
+        if (featureNormalizer == null)
+            --numObjects;
+        if (dataAlphabet == null && instancePipe == null)
+            numObjects -= 2;
+        // write the number of objects for this ranker for the readObject method
+        output.writeInt(numObjects);
+
+        // write the actual member objects
         output.writeObject(rType);
         output.writeObject(trainMetric);
         output.writeObject(k);
         if (featureNormalizer != null)
             output.writeObject(featureNormalizer.name());
-        if (instancePipe == null) {
+        // only store the alphabets or the pipe since the pipe includes the alphabets anyway
+        if (instancePipe == null && dataAlphabet != null) {
             output.writeObject(dataAlphabet);
             output.writeObject(targetAlphabet);
         } else {
             output.writeObject(instancePipe);
         }
         output.writeObject(getModelAsString());
-        output.writeObject("End:RankLibRanker");
+        output.writeObject(features);
     }
 
     /**
-     * Reads all information required for ranking fro the given ObjectStream. The data is expected to have been written via {@link #saveInObjectStream(ObjectOutputStream)} before.
+     * Customizes the Java deserialization for this object to match the format written by {@link #writeObject(ObjectOutputStream)}.
      *
      * @param input The input object stream.
      * @throws IOException            If reading fails.
      * @throws ClassNotFoundException If there is a class mismatch between an expected object and the actual contents of the object stream.
      */
-    public void loadFromObjectStream(ObjectInputStream input) throws IOException, ClassNotFoundException {
-        Object o = input.readObject();
-        while (!o.equals("End:RankLibRanker")) {
+    private void readObject(ObjectInputStream input) throws IOException, ClassNotFoundException {
+        // We know the number of written objects from writeObject()
+        int numWritten = input.readInt();
+        for (int i = 0; i < numWritten; ++i) {
+            Object o = input.readObject();
             assignLoadedObject(o);
-            o = input.readObject();
         }
     }
 
@@ -163,6 +175,8 @@ public class RankLibRanker implements AlphabetCarrying {
             trainMetric = (METRIC) o;
         } else if (o instanceof Integer) {
             k = (int) o;
+        } else if (o instanceof int[]) {
+            features = (int[]) o;
         }
     }
 
@@ -310,7 +324,13 @@ public class RankLibRanker implements AlphabetCarrying {
                     // RankLib indices start counting at 1, MALLET at 0
                     ranklibIndices[i] = indices != null ? indices[i] + 1 : i + 1;
                 String queryId = d.getName().toString();
-                DataPoint dp = new SparseDataPoint(ranklibValues, ranklibIndices, queryId, (Float) ((Label) d.getTarget()).getEntry());
+                // We need to deliver the maximum number of known features because RankLib algorithms have a
+                // range check bounded by this number.
+                int numFeatures = features != null && features.length > 0 ? features[features.length - 1] : -1;
+                if (numFeatures == -1)
+                    numFeatures = ranklibIndices != null && ranklibIndices.length > 0 ? ranklibIndices[ranklibIndices.length - 1] : 0;
+                DataPoint dp = new SparseDataPoint(ranklibValues, ranklibIndices, numFeatures, queryId, (Float) ((Label) d.getTarget()).getEntry());
+
                 // The description field of the DataPoint is used to store the document ID
                 dp.setDescription("#" + d.getSource());
                 return dp;
