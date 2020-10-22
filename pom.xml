@@ -14,7 +14,7 @@
         <dependency>
             <groupId>de.julielab</groupId>
             <artifactId>learning-to-rank</artifactId>
-            <version>2.11-SNAPSHOT</version>
+            <version>2.11</version>
         </dependency>
         <dependency>
             <groupId>ch.qos.logback</groupId>
