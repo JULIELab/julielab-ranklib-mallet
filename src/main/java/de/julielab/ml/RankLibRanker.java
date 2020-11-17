@@ -309,7 +309,7 @@ public class RankLibRanker implements AlphabetCarrying, Serializable {
             final double[] values = fv.getValues();
             final int[] indices = fv.getIndices();
 
-            if (values.length > 0 || indices.length > 0) {
+            if (values != null && values.length > 0 || indices != null && indices.length > 0) {
 
                 float[] ranklibValues = new float[fv.numLocations()];
                 int[] ranklibIndices = new int[fv.numLocations()];
